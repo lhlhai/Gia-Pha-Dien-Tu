@@ -1,11 +1,8 @@
 /**
- * Book Generator — Transforms genealogy tree data into a structured book format.
- * FIXED: Root detection based on parentFamilies instead of families.children
+ * Book Generator — Uses generation from DB directly (no recalculation)
  */
 
 import type { TreeNode, TreeFamily } from './tree-layout';
-
-// ═══ Book Data Types ═══
 
 export interface BookPerson {
   handle: string;
@@ -42,110 +39,60 @@ export interface BookData {
   nameIndex: { name: string; generation: number; isPatrilineal: boolean }[];
 }
 
-// ═══ Helpers ═══
+// helpers
+const ROMAN = ['I','II','III','IV','V','VI','VII','VIII','IX','X'];
 
-const ROMAN = ['I','II','III','IV','V','VI','VII','VIII','IX','X','XI','XII','XIII','XIV','XV'];
-
-function romanNumeral(n: number): string {
-  return ROMAN[n] || `${n + 1}`;
+function romanNumeral(n: number) {
+  return ROMAN[n] || `${n+1}`;
 }
 
-function genTitle(gen: number): string {
-  const roman = romanNumeral(gen);
-  return gen === 0 ? `ĐỜI THỨ ${roman} — THỦY TỔ` : `ĐỜI THỨ ${roman}`;
+function genTitle(gen: number) {
+  return gen === 1
+    ? `ĐỜI THỨ I — THỦY TỔ`
+    : `ĐỜI THỨ ${romanNumeral(gen)}`;
 }
 
-function formatYears(b?: number, d?: number, living?: boolean): string {
+function formatYears(b?: number, d?: number, living?: boolean) {
   if (!b) return '—';
   if (d) return `${b} – ${d}`;
   if (living) return `${b} – nay`;
   return `${b}`;
 }
 
-// ═══ Main Generator ═══
-
+// MAIN
 export function generateBookData(
   people: TreeNode[],
   families: TreeFamily[],
-  familyName: string = 'Lê'
+  familyName = 'Lê'
 ): BookData {
 
   const personMap = new Map(people.map(p => [p.handle, p]));
-  const familyMap = new Map(families.map(f => [f.handle, f]));
+  const familyMap = new Map(f => families.map(f => [f.handle, f]));
 
-  // ── STEP 1: FIND ROOTS BY parentFamilies ──
-  const roots = people.filter(
-    p => !p.parentFamilies || p.parentFamilies.length === 0
-  );
-
-  const generations = new Map<string, number>();
-
-  function setGen(handle: string, gen: number) {
-    if (generations.has(handle)) return;
-    generations.set(handle, gen);
-
-    const person = personMap.get(handle);
-    if (!person) return;
-
-    // traverse families where person is parent
-    for (const famId of person.families) {
-      const fam = familyMap.get(famId);
-      if (!fam) continue;
-
-      // spouse same generation
-      if (fam.fatherHandle && fam.fatherHandle !== handle)
-        generations.set(fam.fatherHandle, gen);
-
-      if (fam.motherHandle && fam.motherHandle !== handle)
-        generations.set(fam.motherHandle, gen);
-
-      // children next generation
-      for (const ch of fam.children) {
-        setGen(ch, gen + 1);
-      }
-    }
-  }
-
-  // assign from roots
-  for (const r of roots) {
-    setGen(r.handle, 0);
-  }
-
-  // fallback
-  for (const p of people) {
-    if (!generations.has(p.handle)) generations.set(p.handle, 0);
-  }
-
-  // ── STEP 2: BUILD BOOK PERSONS ──
   const bookPersons: BookPerson[] = [];
 
   for (const p of people) {
     if (!p.isPatrilineal) continue;
 
-    const gen = generations.get(p.handle) ?? 0;
-
     // parents
-    let fatherName: string | undefined;
-    let motherName: string | undefined;
+    let fatherName, motherName;
 
     for (const pfId of p.parentFamilies) {
-      const pf = familyMap.get(pfId);
-      if (!pf) continue;
+      const fam = familyMap.get(pfId);
+      if (!fam) continue;
 
-      if (pf.fatherHandle) {
-        const f = personMap.get(pf.fatherHandle);
+      if (fam.fatherHandle) {
+        const f = personMap.get(fam.fatherHandle);
         if (f) fatherName = f.displayName;
       }
-      if (pf.motherHandle) {
-        const m = personMap.get(pf.motherHandle);
+      if (fam.motherHandle) {
+        const m = personMap.get(fam.motherHandle);
         if (m) motherName = m.displayName;
       }
     }
 
     // spouse + children
-    let spouseName: string | undefined;
-    let spouseYears: string | undefined;
-    let spouseNote: string | undefined;
+    let spouseName, spouseYears, spouseNote;
     const children: BookPerson['children'] = [];
 
     for (const famId of p.families) {
@@ -153,7 +100,9 @@ export function generateBookData(
       if (!fam) continue;
 
       const spouseHandle =
-        fam.fatherHandle === p.handle ? fam.motherHandle : fam.fatherHandle;
+        fam.fatherHandle === p.handle
+          ? fam.motherHandle
+          : fam.fatherHandle;
 
       if (spouseHandle) {
         const s = personMap.get(spouseHandle);
@@ -177,11 +126,11 @@ export function generateBookData(
     }
 
     // child index
-    let childIndex: number | undefined;
+    let childIndex;
     if (p.parentFamilies.length > 0) {
-      const pf = familyMap.get(p.parentFamilies[0]);
-      if (pf) {
-        const idx = pf.children.indexOf(p.handle);
+      const fam = familyMap.get(p.parentFamilies[0]);
+      if (fam) {
+        const idx = fam.children.indexOf(p.handle);
         if (idx >= 0) childIndex = idx + 1;
       }
     }
@@ -194,7 +143,7 @@ export function generateBookData(
       deathYear: p.deathYear,
       isLiving: p.isLiving,
       isPatrilineal: p.isPatrilineal,
-      generation: gen,
+      generation: p.generation,
       fatherName,
       motherName,
       spouseName,
@@ -205,43 +154,28 @@ export function generateBookData(
     });
   }
 
-  // ── STEP 3: BUILD CHAPTERS ──
-  const maxGen = Math.max(...Array.from(generations.values()));
-  const chapters: BookChapter[] = [];
-
-  for (let g = 0; g <= maxGen; g++) {
-    const members = bookPersons
+  // chapters by generation
+  const gens = [...new Set(bookPersons.map(p => p.generation))].sort((a,b)=>a-b);
+  const chapters: BookChapter[] = gens.map(g => ({
+    generation: g,
+    title: genTitle(g),
+    romanNumeral: romanNumeral(g),
+    members: bookPersons
       .filter(p => p.generation === g)
-      .sort((a,b) => (a.childIndex ?? 99) - (b.childIndex ?? 99));
-
-    if (members.length === 0) continue;
-
-    chapters.push({
-      generation: g,
-      title: genTitle(g),
-      romanNumeral: romanNumeral(g),
-      members
-    });
-  }
-
-  // ── STEP 4: NAME INDEX ──
-  const nameIndex = people
-    .map(p => ({
-      name: p.displayName,
-      generation: generations.get(p.handle) ?? 0,
-      isPatrilineal: p.isPatrilineal
-    }))
-    .sort((a,b) => a.name.localeCompare(b.name,'vi'));
+      .sort((a,b)=>(a.childIndex ?? 99)-(b.childIndex ?? 99))
+  }));
 
   return {
     familyName,
-    exportDate: new Date().toLocaleDateString('vi-VN',{
-      year:'numeric', month:'long', day:'numeric'
-    }),
-    totalGenerations: maxGen + 1,
+    exportDate: new Date().toLocaleDateString('vi-VN'),
+    totalGenerations: gens.length,
     totalMembers: people.length,
-    totalPatrilineal: people.filter(p => p.isPatrilineal).length,
+    totalPatrilineal: people.filter(p=>p.isPatrilineal).length,
     chapters,
-    nameIndex
+    nameIndex: people.map(p=>({
+      name: p.displayName,
+      generation: p.generation,
+      isPatrilineal: p.isPatrilineal
+    }))
   };
 }
